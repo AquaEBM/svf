@@ -16,7 +16,7 @@ const MIN_FREQ: f32 = 13.;
 const MAX_FREQ: f32 = 21000.;
 
 #[derive(Params)]
-pub struct SVFParams {
+struct SVFParams {
     #[id = "cutoff"]
     cutoff: FloatParam,
     #[id = "res"]
@@ -28,7 +28,7 @@ pub struct SVFParams {
 }
 
 #[derive(Enum, PartialEq, Eq)]
-enum FilterMode {
+pub enum FilterMode {
     #[name = "Highpass"]
     HP,
     #[name = "Lowpass"]
@@ -125,6 +125,14 @@ where
         self.g.set_target(map(cutoff * self.pi_tick, f32::tan), block_len)
     }
 
+    pub fn set_resonance(&mut self, res: Simd<f32, N>) {
+        *self.r = res;
+    }
+
+    pub fn set_resonance_smoothed(&mut self, res: Simd<f32, N>, block_len: usize) {
+        self.r.set_target(res, block_len)
+    }
+
     pub fn set_gain(&mut self, k: Simd<f32, N>) {
         *self.k = k;
     }
@@ -133,28 +141,34 @@ where
         self.k.set_target(k, block_len)
     }
 
-    pub fn set_gain_db(&mut self, db: Simd<f32, N>) {
-        *self.k = map(db, |val| 10f32.powf(val));
+    pub fn set_params(&mut self, cutoff: Simd<f32, N>, res: Simd<f32, N>, gain: Simd<f32, N>) {
+        self.set_cutoff(cutoff);
+        self.set_gain(gain);
+        self.set_resonance(res);
     }
 
-    pub fn set_gain_db_smoothed(&mut self, db: Simd<f32, N>, block_len: usize) {
-        self.k.set_target(map(db, |val| 10f32.powf(val)), block_len)
-    }
-
-    pub fn set_resonance_smoothed(&mut self, r: Simd<f32, N>, block_len: usize) {
-        self.r.set_target(r, block_len)
+    pub fn set_params_smoothed(
+        &mut self,
+        cutoff: Simd<f32, N>,
+        res: Simd<f32, N>,
+        gain: Simd<f32, N>,
+        block_len: usize,
+    ) {
+        self.set_cutoff_smoothed(cutoff, block_len);
+        self.set_resonance_smoothed(res, block_len);
+        self.set_gain_smoothed(gain, block_len);
     }
 
     pub fn update_cutoff_smoother(&mut self) {
         self.g.tick()
     }
 
-    pub fn update_gain_smoother(&mut self) {
-        self.k.tick()
-    }
-
     pub fn update_resonance_smoother(&mut self) {
         self.r.tick()
+    }
+
+    pub fn update_gain_smoother(&mut self) {
+        self.k.tick()
     }
 
     pub fn update_all_smoothers(&mut self) {
@@ -219,6 +233,21 @@ where
         let lp = self.lp;
         self.k.mul_add(lp, self.x - lp)
     }
+
+    pub fn output_function(mode: FilterMode) -> fn(&Self) -> Simd<f32, N> {
+        match mode {
+            FilterMode::AP => Self::get_allpass,
+            FilterMode::HP => Self::get_highpass,
+            FilterMode::LP => Self::get_lowpass,
+            FilterMode::BP => Self::get_bandpass,
+            FilterMode::BP1 => Self::get_bandpass1,
+            FilterMode::NCH => Self::get_notch,
+            FilterMode::HSH => Self::get_high_shelf,
+            FilterMode::BSH => Self::get_band_shelf,
+            FilterMode::LSH => Self::get_low_shelf,
+            FilterMode::PK => Self::get_peaking,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -274,33 +303,16 @@ impl Plugin for SVFFilter {
 
         let cutoff = self.params.cutoff.unmodulated_plain_value();
 
-        self.filter.set_cutoff_smoothed(
+        self.filter.set_params_smoothed(
             Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff)),
-            block_len
-        );
-
-        self.filter.set_resonance_smoothed(
             Simd::splat(self.params.res.unmodulated_plain_value()),
+            Simd::splat(10f32.powf(self.params.gain.unmodulated_plain_value() * (1. / 20.))),
             block_len
         );
 
-        self.filter.set_gain_db_smoothed(
-            Simd::splat(self.params.gain.unmodulated_plain_value()),
-            block_len
+        let get_output = SVF::<2>::output_function(
+            self.params.mode.unmodulated_plain_value()
         );
-
-        let get_output = match self.params.mode.unmodulated_plain_value() {
-            FilterMode::AP => SVF::<2>::get_allpass,
-            FilterMode::HP => SVF::<2>::get_highpass,
-            FilterMode::LP => SVF::<2>::get_lowpass,
-            FilterMode::BP => SVF::<2>::get_bandpass,
-            FilterMode::BP1 => SVF::<2>::get_bandpass1,
-            FilterMode::NCH => SVF::<2>::get_notch,
-            FilterMode::HSH => SVF::<2>::get_high_shelf,
-            FilterMode::BSH => SVF::<2>::get_band_shelf,
-            FilterMode::LSH => SVF::<2>::get_low_shelf,
-            FilterMode::PK => SVF::<2>::get_peaking,
-        };
 
         for mut frame in buffer.iter_samples() {
 

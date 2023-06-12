@@ -1,6 +1,6 @@
-use svf::SVF;
+use svf::SVFFilter;
 use nih_plug::prelude::nih_export_standalone;
 
 fn main() {
-    nih_export_standalone::<SVF<2>>();
+    nih_export_standalone::<SVFFilter>();
 }

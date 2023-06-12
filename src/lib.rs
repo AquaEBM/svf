@@ -1,15 +1,19 @@
 #![feature(portable_simd)]
 
 use plugin_util::{
-    util::map,
+    simd_util::map,
     smoothing::{LogSmoother, SIMDSmoother},
     filter::Integrator,
 };
 
 use nih_plug::prelude::*;
 use core_simd::simd::*;
+use std_float::StdFloat;
 
 use std::{sync::Arc, array, f32::consts::PI};
+
+const MIN_FREQ: f32 = 13.;
+const MAX_FREQ: f32 = 21000.;
 
 #[derive(Params)]
 pub struct SVFParams {
@@ -17,6 +21,34 @@ pub struct SVFParams {
     cutoff: FloatParam,
     #[id = "res"]
     res: FloatParam,
+    #[id = "gain"]
+    gain: FloatParam,
+    #[id = "mode"]
+    mode: EnumParam<FilterMode>
+}
+
+#[derive(Enum, PartialEq, Eq)]
+enum FilterMode {
+    #[name = "Highpass"]
+    HP,
+    #[name = "Lowpass"]
+    LP,
+    #[name = "Bandpass"]
+    BP,
+    #[name = "Unit Bandpass"]
+    BP1,
+    #[name = "Allpass"]
+    AP,
+    #[name = "Notch"]
+    NCH,
+    #[name = "High Shelf"]
+    HSH,
+    #[name = "Band shelf"]
+    BSH,
+    #[name = "Low shelf"]
+    LSH,
+    #[name = "peaking"]
+    PK,
 }
 
 impl Default for SVFParams {
@@ -25,13 +57,14 @@ impl Default for SVFParams {
 
             cutoff: FloatParam::new(
                 "Cutoff",
-                660.,
-                FloatRange::Skewed {
-                    min: 13.,
-                    max: 21000.,
-                    factor: 0.2,
-                },
-            ),
+                0.5,
+                FloatRange::Linear {
+                    min: 0.,
+                    max: 1.,
+               },
+            ).with_value_to_string(Arc::new(
+                |value| (MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(value)).to_string()
+            )),
 
             res: FloatParam::new(
                 "Resonance",
@@ -42,6 +75,14 @@ impl Default for SVFParams {
                     factor: 0.3,
                 }),
             ),
+
+            gain: FloatParam::new(
+                "Gain",
+                1.,
+                FloatRange::Linear { min: -18., max: 18. }
+            ),
+
+            mode: EnumParam::new("Filter Mode", FilterMode::AP),
         }
     }
 }
@@ -51,51 +92,143 @@ pub struct SVF<const N: usize>
 where
     LaneCount<N>: SupportedLaneCount
 {
-    params: Arc<SVFParams>,
     g: LogSmoother<N>,
     r: LogSmoother<N>,
-    integrators: [Integrator<N> ; 2],
+    k: LogSmoother<N>,
+    s: [Integrator<N> ; 2],
     pi_tick: Simd<f32, N>,
+    x: Simd<f32, N>,
+    hp: Simd<f32, N>,
+    bp: Simd<f32, N>,
+    lp: Simd<f32, N>,
 }
 
 impl<const N: usize> SVF<N>
 where
     LaneCount<N>: SupportedLaneCount
 {
-    fn update_smoothers(&mut self, block_len: usize) {
-        let cutoff = Simd::splat(self.params.cutoff.unmodulated_plain_value());
-
-        self.g.set_target(map(cutoff * self.pi_tick, f32::tan), block_len);
-
-        let r = Simd::splat(self.params.res.unmodulated_plain_value());
-
-        self.r.set_target(r, block_len);
+    pub fn set_sample_rate(&mut self, sr: f32) {
+        self.pi_tick = Simd::splat(PI / sr);
     }
 
-    fn process(&mut self, sample: Simd<f32, N>) -> Simd<f32, N> {
+    pub fn reset(&mut self) {
+        self.s[0].reset();
+        self.s[1].reset();
+    }
 
-        self.g.tick();
-        self.r.tick();
+    pub fn set_cutoff(&mut self, cutoff: Simd<f32, N>) {
+        *self.g = map(cutoff * self.pi_tick, f32::tan);
+    }
 
-        let &g = self.g.current();
-        let &r = self.r.current();
+    pub fn set_cutoff_smoothed(&mut self, cutoff: Simd<f32, N>, block_len: usize) {
 
-        let s1 = self.integrators[0].previous_output();
-        let s2 = self.integrators[1].previous_output();
+        self.g.set_target(map(cutoff * self.pi_tick, f32::tan), block_len)
+    }
 
-        let g1 = r + g;
+    pub fn set_gain(&mut self, k: Simd<f32, N>) {
+        *self.k = k;
+    }
 
-        let hp = (sample - s2 - g1 * s1) / (Simd::splat(1.) + g * g1);
+    pub fn set_gain_smoothed(&mut self, k: Simd<f32, N>, block_len: usize) {
+        self.k.set_target(k, block_len)
+    }
 
-        let bp = self.integrators[0].process(hp, g);
-        self.integrators[1].process(bp, g)
+    pub fn set_gain_db(&mut self, db: Simd<f32, N>) {
+        *self.k = map(db, |val| 10f32.powf(val));
+    }
+
+    pub fn set_gain_db_smoothed(&mut self, db: Simd<f32, N>, block_len: usize) {
+        self.k.set_target(map(db, |val| 10f32.powf(val)), block_len)
+    }
+
+    pub fn set_resonance_smoothed(&mut self, r: Simd<f32, N>, block_len: usize) {
+        self.r.set_target(r, block_len)
+    }
+
+    pub fn update_cutoff_smoother(&mut self) {
+        self.g.tick()
+    }
+
+    pub fn update_gain_smoother(&mut self) {
+        self.k.tick()
+    }
+
+    pub fn update_resonance_smoother(&mut self) {
+        self.r.tick()
+    }
+
+    pub fn update_all_smoothers(&mut self) {
+        self.update_cutoff_smoother();
+        self.update_gain_smoother();
+        self.update_resonance_smoother();
+    }
+
+    pub fn process(&mut self, sample: Simd<f32, N>) {
+
+        let g = *self.g;
+
+        let g1 = *self.r + g;
+
+        self.x = sample;
+        self.hp = (sample - *self.s[1] - *self.s[0] * g1) / (Simd::splat(1.) + g * g1);
+        self.bp = self.s[0].process(self.hp, g);
+        self.lp = self.s[1].process(self.bp, g);
+    }
+
+    pub fn get_highpass(&self) -> Simd<f32, N> {
+        self.hp
+    }
+
+    pub fn get_bandpass(&self) -> Simd<f32, N> {
+        self.bp
+    }
+
+    pub fn get_lowpass(&self) -> Simd<f32, N> {
+        self.lp
+    }
+
+    pub fn get_bandpass1(&self) -> Simd<f32, N> {
+        *self.r * self.bp
+    }
+
+    pub fn get_allpass(&self) -> Simd<f32, N> {
+        Simd::splat(2.).mul_add(self.get_bandpass1(), -self.x)
+    }
+
+    pub fn get_notch(&self) -> Simd<f32, N> {
+        self.x - self.get_bandpass1()
+    }
+
+    pub fn get_peaking(&self) -> Simd<f32, N> {
+        self.lp - self.hp
+    }
+
+    pub fn get_high_shelf(&self) -> Simd<f32, N> {
+
+        let hp = self.hp;
+        self.k.mul_add(hp, self.x - hp)
+    }
+
+    pub fn get_band_shelf(&self) -> Simd<f32, N> {
+
+        let bp1 = self.get_bandpass1();
+        self.k.mul_add(bp1, self.x - bp1)
+    }
+
+    pub fn get_low_shelf(&self) -> Simd<f32, N> {
+        let lp = self.lp;
+        self.k.mul_add(lp, self.x - lp)
     }
 }
 
-impl<const N: usize> Plugin for SVF<N>
-where
-    LaneCount<N>: SupportedLaneCount
-{
+#[derive(Default)]
+pub struct SVFFilter {
+    params: Arc<SVFParams>,
+    filter: SVF<2>,
+}
+
+impl Plugin for SVFFilter {
+
     const NAME: &'static str = "Linear SVF";
 
     const VENDOR: &'static str = "AquaEBM";
@@ -116,8 +249,8 @@ where
 
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
         AudioIOLayout {
-            main_input_channels: NonZeroU32::new(N as u32),
-            main_output_channels: NonZeroU32::new(N as u32),
+            main_input_channels: NonZeroU32::new(2),
+            main_output_channels: NonZeroU32::new(2),
             ..AudioIOLayout::const_default()
         }
     ];
@@ -137,15 +270,49 @@ where
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
 
-        self.update_smoothers(buffer.samples());
+        let block_len = buffer.samples();
+
+        let cutoff = self.params.cutoff.unmodulated_plain_value();
+
+        self.filter.set_cutoff_smoothed(
+            Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff)),
+            block_len
+        );
+
+        self.filter.set_resonance_smoothed(
+            Simd::splat(self.params.res.unmodulated_plain_value()),
+            block_len
+        );
+
+        self.filter.set_gain_db_smoothed(
+            Simd::splat(self.params.gain.unmodulated_plain_value()),
+            block_len
+        );
+
+        let get_output = match self.params.mode.unmodulated_plain_value() {
+            FilterMode::AP => SVF::<2>::get_allpass,
+            FilterMode::HP => SVF::<2>::get_highpass,
+            FilterMode::LP => SVF::<2>::get_lowpass,
+            FilterMode::BP => SVF::<2>::get_bandpass,
+            FilterMode::BP1 => SVF::<2>::get_bandpass1,
+            FilterMode::NCH => SVF::<2>::get_notch,
+            FilterMode::HSH => SVF::<2>::get_high_shelf,
+            FilterMode::BSH => SVF::<2>::get_band_shelf,
+            FilterMode::LSH => SVF::<2>::get_low_shelf,
+            FilterMode::PK => SVF::<2>::get_peaking,
+        };
 
         for mut frame in buffer.iter_samples() {
 
-            let mut sample = array::from_fn(
+            let sample = array::from_fn(
                 |i| *unsafe { frame.get_unchecked_mut(i) }
             ).into();
 
-            sample = self.process(sample);
+            self.filter.update_all_smoothers();
+
+            self.filter.process(sample);
+
+            let sample = get_output(&self.filter);
 
             unsafe {
                 *frame.get_unchecked_mut(0) = sample[0];
@@ -167,20 +334,17 @@ where
         _context: &mut impl InitContext<Self>,
     ) -> bool {
 
-        self.pi_tick = Simd::splat(PI / buffer_config.sample_rate);
+        self.filter.set_sample_rate(buffer_config.sample_rate);
         true
     }
 
     fn reset(&mut self) {
-        self.integrators[0].reset();
-        self.integrators[1].reset();
+        self.filter.reset();
     }
 }
 
-impl<const N: usize> Vst3Plugin for SVF<N>
-where
-    LaneCount<N>: SupportedLaneCount
-{
+impl Vst3Plugin for SVFFilter {
+
     const VST3_CLASS_ID: [u8; 16] = *b"svf_monkeeeeeeee";
 
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
@@ -189,10 +353,8 @@ where
     ];
 }
 
-impl<const N: usize> ClapPlugin for SVF<N>
-where
-    LaneCount<N>: SupportedLaneCount
-{
+impl ClapPlugin for SVFFilter {
+
     const CLAP_ID: &'static str = "com.AquaEBM.linear_svf";
 
     const CLAP_DESCRIPTION: Option<&'static str> = Some("Linear SVF Filter");
@@ -207,5 +369,5 @@ where
     ];
 }
 
-nih_export_clap!(SVF<2>);
-nih_export_vst3!(SVF<2>);
+nih_export_clap!(SVFFilter);
+nih_export_vst3!(SVFFilter);

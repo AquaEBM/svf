@@ -1,9 +1,8 @@
 #![feature(portable_simd)]
 
-use plugin_util::filter::svf::SVF;
+use plugin_util::{filter::svf::SVF, simd::*};
 
 use nih_plug::prelude::*;
-use core_simd::simd::*;
 
 use std::{sync::Arc, array};
 

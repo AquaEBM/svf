@@ -94,7 +94,7 @@ impl Default for SVFParams {
                 "Gain",
                 1.,
                 FloatRange::Linear { min: -18., max: 18. }
-            ),
+            ).with_unit(" db"),
 
             mode: EnumParam::new("Filter Mode", FilterMode::AP),
         }

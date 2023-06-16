@@ -93,7 +93,7 @@ impl Default for SVFParams {
             gain: FloatParam::new(
                 "Gain",
                 1.,
-                FloatRange::Linear { min: -18., max: 18. }
+                FloatRange::Linear { min: -30., max: 30. }
             ).with_unit(" db"),
 
             mode: EnumParam::new("Filter Mode", FilterMode::AP),
@@ -154,14 +154,23 @@ impl Plugin for SVFFilter {
 
         let cutoff = self.params.cutoff.unmodulated_plain_value();
 
+        let filter_mode = self.params.mode.unmodulated_plain_value();
+        let gain = self.params.gain.unmodulated_plain_value();
+
+        let factor = match filter_mode {
+            FilterMode::HSH => 1.,
+            FilterMode::LSH => -1.,
+            _ => 0.,
+        };
+
         self.filter.set_params_smoothed(
             Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff)),
             Simd::splat(self.params.res.unmodulated_plain_value()),
-            Simd::splat(10f32.powf(self.params.gain.unmodulated_plain_value() * (1. / 20.))),
+            Simd::splat(10f32.powf(self.params.gain.unmodulated_plain_value() * factor * (1. / 20.))),
             block_len
         );
 
-        let get_output = self.params.mode.unmodulated_plain_value().output_function::<2>();
+        let get_output = filter_mode.output_function::<2>();
 
         for mut frame in buffer.iter_samples() {
 

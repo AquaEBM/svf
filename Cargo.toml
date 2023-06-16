@@ -18,4 +18,3 @@ plugin_util = { git = "https://github.com/AquaEBM/plugin_util.git" }
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
 core_simd = { git = "https://github.com/rust-lang/portable-simd.git" }
 std_float = { git = "https://github.com/rust-lang/portable-simd.git" }
-rtrb = "0.2"

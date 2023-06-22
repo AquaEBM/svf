@@ -1145,7 +1145,7 @@ checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
 [[package]]
 name = "plugin_util"
 version = "0.1.0"
-source = "git+https://github.com/AquaEBM/plugin_util.git#6ef07eb23efa154b2ed856802c1028097cddfc2f"
+source = "git+https://github.com/AquaEBM/plugin_util.git#b1ab8dded999f518931377d31a47f9f26d6f76af"
 dependencies = [
  "cfg-if",
 ]
@@ -1337,7 +1337,6 @@ dependencies = [
  "core_simd",
  "nih_plug",
  "plugin_util",
- "rtrb",
  "std_float",
 ]
 

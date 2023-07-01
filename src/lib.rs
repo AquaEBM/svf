@@ -84,15 +84,15 @@ impl Default for SVFParams {
                 "Resonance",
                 1.,
                 FloatRange::Reversed(&FloatRange::Skewed {
-                    min: 0.03,
-                    max: 2.,
-                    factor: 0.3,
+                    min: 0.02,
+                    max: 1.,
+                    factor: 0.25,
                 }),
             ),
 
             gain: FloatParam::new(
                 "Gain",
-                1.,
+                0.,
                 FloatRange::Linear { min: -30., max: 30. }
             ).with_unit(" db"),
 
@@ -165,8 +165,8 @@ impl Plugin for SVFFilter {
 
         self.filter.set_params_smoothed(
             Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff)),
-            Simd::splat(self.params.res.unmodulated_plain_value()),
-            Simd::splat(10f32.powf(self.params.gain.unmodulated_plain_value() * factor * (1. / 20.))),
+            Simd::splat(2. * self.params.res.unmodulated_plain_value()),
+            Simd::splat(10f32.powf(gain * factor * (1. / 20.))),
             block_len
         );
 

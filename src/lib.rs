@@ -41,8 +41,6 @@ pub enum FilterMode {
     BSH,
     #[name = "Low shelf"]
     LSH,
-    #[name = "peaking"]
-    PK,
 }
 
 impl FilterMode {
@@ -60,7 +58,6 @@ impl FilterMode {
             FilterMode::HSH => SVF::<N>::get_high_shelf,
             FilterMode::BSH => SVF::<N>::get_band_shelf,
             FilterMode::LSH => SVF::<N>::get_low_shelf,
-            FilterMode::PK => SVF::<N>::get_peaking,
         }
     }
 }
@@ -159,7 +156,7 @@ impl Plugin for SVFFilter {
 
         let factor = match filter_mode {
             FilterMode::HSH => 1.,
-            FilterMode::LSH => -1.,
+            FilterMode::BSH | FilterMode::LSH => -1.,
             _ => 0.,
         };
 

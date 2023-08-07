@@ -155,8 +155,8 @@ impl Plugin for SVFFilter {
         let gain = self.params.gain.unmodulated_plain_value();
 
         let factor = match filter_mode {
-            FilterMode::HSH => 1.,
-            FilterMode::BSH | FilterMode::LSH => -1.,
+            FilterMode::HSH | FilterMode::BSH => 1.,
+            FilterMode::LSH => -1.,
             _ => 0.,
         };
 

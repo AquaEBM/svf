@@ -90,7 +90,7 @@ impl Default for SVFParams {
             gain: FloatParam::new(
                 "Gain",
                 0.,
-                FloatRange::Linear { min: -30., max: 30. }
+                FloatRange::Linear { min: -18., max: 18. }
             ).with_unit(" db"),
 
             mode: EnumParam::new("Filter Mode", FilterMode::AP),
@@ -147,27 +147,27 @@ impl Plugin for SVFFilter {
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
 
-        let block_len = buffer.samples();
+        let num_samples = buffer.samples();
 
         let cutoff = self.params.cutoff.unmodulated_plain_value();
+        let cutoff = Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff));
+
+        let gain = self.params.gain.unmodulated_plain_value();
+        let gain = Simd::splat(10f32.powf(gain * (1. / 20.)));
+
+        let res = Simd::splat(2. * self.params.res.unmodulated_plain_value());
 
         let filter_mode = self.params.mode.unmodulated_plain_value();
-        let gain = self.params.gain.unmodulated_plain_value();
-
-        let factor = match filter_mode {
-            FilterMode::HSH | FilterMode::BSH => 1.,
-            FilterMode::LSH => -1.,
-            _ => 0.,
-        };
-
-        self.filter.set_params_smoothed(
-            Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff)),
-            Simd::splat(2. * self.params.res.unmodulated_plain_value()),
-            Simd::splat(10f32.powf(gain * factor * (1. / 20.))),
-            block_len
-        );
-
         let get_output = filter_mode.output_function::<2>();
+
+        let f = &mut self.filter;
+
+        match filter_mode {
+            FilterMode::LSH => f.set_params_low_shelving_smoothed(cutoff, res, gain, num_samples),
+            FilterMode::BSH => f.set_params_band_shelving_smoothed(cutoff, res, gain, num_samples),
+            FilterMode::HSH => f.set_params_high_shelving_smoothed(cutoff, res, gain, num_samples),
+            _ => f.set_params_non_shelving_smoothed(cutoff, res, num_samples),
+        }
 
         for mut frame in buffer.iter_samples() {
 

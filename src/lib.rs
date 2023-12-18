@@ -1,13 +1,21 @@
 #![feature(portable_simd)]
 
-use plugin_util::{filter::svf::SVF, simd::*};
+use plugin_util::{
+    filter::svf::{FilterMode, SVF},
+    simd::*,
+};
 
 use nih_plug::prelude::*;
 
-use std::{sync::Arc, array};
+use core::f32::consts::TAU;
+use std::sync::Arc;
 
 const MIN_FREQ: f32 = 13.;
 const MAX_FREQ: f32 = 21000.;
+
+const NUM_CHANNELS: usize = 2; // stereo
+
+type Filter = SVF<NUM_CHANNELS>;
 
 #[derive(Params)]
 struct SVFParams {
@@ -18,64 +26,16 @@ struct SVFParams {
     #[id = "gain"]
     gain: FloatParam,
     #[id = "mode"]
-    mode: EnumParam<FilterMode>
-}
-
-#[derive(Enum, PartialEq, Eq)]
-pub enum FilterMode {
-    #[name = "Highpass"]
-    HP,
-    #[name = "Lowpass"]
-    LP,
-    #[name = "Bandpass"]
-    BP,
-    #[name = "Unit Bandpass"]
-    BP1,
-    #[name = "Allpass"]
-    AP,
-    #[name = "Notch"]
-    NCH,
-    #[name = "High Shelf"]
-    HSH,
-    #[name = "Band shelf"]
-    BSH,
-    #[name = "Low shelf"]
-    LSH,
-}
-
-impl FilterMode {
-    pub fn output_function<const N: usize>(&self) -> fn(&SVF<N>) -> Simd<f32, N>
-    where
-        LaneCount<N>: SupportedLaneCount
-    {
-        match self {
-            FilterMode::AP => SVF::<N>::get_allpass,
-            FilterMode::HP => SVF::<N>::get_highpass,
-            FilterMode::LP => SVF::<N>::get_lowpass,
-            FilterMode::BP => SVF::<N>::get_bandpass,
-            FilterMode::BP1 => SVF::<N>::get_bandpass1,
-            FilterMode::NCH => SVF::<N>::get_notch,
-            FilterMode::HSH => SVF::<N>::get_high_shelf,
-            FilterMode::BSH => SVF::<N>::get_band_shelf,
-            FilterMode::LSH => SVF::<N>::get_low_shelf,
-        }
-    }
+    mode: EnumParam<FilterMode>,
 }
 
 impl Default for SVFParams {
     fn default() -> Self {
         Self {
-
-            cutoff: FloatParam::new(
-                "Cutoff",
-                0.5,
-                FloatRange::Linear {
-                    min: 0.,
-                    max: 1.,
-               },
-            ).with_value_to_string(Arc::new(
-                |value| (MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(value)).to_string()
-            )),
+            cutoff: FloatParam::new("Cutoff", 0.5, FloatRange::Linear { min: 0., max: 1. })
+                .with_value_to_string(Arc::new(|value| {
+                    (MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(value)).to_string()
+                })),
 
             res: FloatParam::new(
                 "Resonance",
@@ -83,29 +43,46 @@ impl Default for SVFParams {
                 FloatRange::Reversed(&FloatRange::Skewed {
                     min: 0.02,
                     max: 1.,
-                    factor: 0.25,
+                    factor: 0.37,
                 }),
             ),
 
             gain: FloatParam::new(
                 "Gain",
                 0.,
-                FloatRange::Linear { min: -18., max: 18. }
-            ).with_unit(" db"),
+                FloatRange::Linear {
+                    min: -30.,
+                    max: 30.,
+                },
+            )
+            .with_unit(" db"),
 
-            mode: EnumParam::new("Filter Mode", FilterMode::AP),
+            mode: EnumParam::new("Filter Mode", FilterMode::default()),
         }
+    }
+}
+
+impl SVFParams {
+    fn get_values(&self, pi_tick: f32) -> (f32x2, f32x2, f32x2, FilterMode) {
+        let cutoff_normalized = self.cutoff.unmodulated_plain_value();
+        let gain_normalized = self.gain.unmodulated_plain_value();
+        (
+            Simd::splat(pi_tick * MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff_normalized)),
+            Simd::splat(2. * self.res.unmodulated_plain_value()),
+            Simd::splat(10f32.powf(gain_normalized * (1. / 20.))),
+            self.mode.unmodulated_plain_value(),
+        )
     }
 }
 
 #[derive(Default)]
 pub struct SVFFilter {
     params: Arc<SVFParams>,
-    filter: SVF<2>,
+    pi_tick: f32,
+    filter: Filter,
 }
 
 impl Plugin for SVFFilter {
-
     const NAME: &'static str = "Linear SVF";
 
     const VENDOR: &'static str = "AquaEBM";
@@ -124,13 +101,11 @@ impl Plugin for SVFFilter {
 
     const HARD_REALTIME_ONLY: bool = false;
 
-    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
-        AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
-            main_output_channels: NonZeroU32::new(2),
-            ..AudioIOLayout::const_default()
-        }
-    ];
+    const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[AudioIOLayout {
+        main_input_channels: NonZeroU32::new(NUM_CHANNELS as u32),
+        main_output_channels: NonZeroU32::new(NUM_CHANNELS as u32),
+        ..AudioIOLayout::const_default()
+    }];
 
     type SysExMessage = ();
 
@@ -146,40 +121,26 @@ impl Plugin for SVFFilter {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-
-        let num_samples = buffer.samples();
-
-        let cutoff = self.params.cutoff.unmodulated_plain_value();
-        let cutoff = Simd::splat(MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff));
-
-        let gain = self.params.gain.unmodulated_plain_value();
-        let gain = Simd::splat(10f32.powf(gain * (1. / 20.)));
-
-        let res = Simd::splat(2. * self.params.res.unmodulated_plain_value());
-
-        let filter_mode = self.params.mode.unmodulated_plain_value();
-        let get_output = filter_mode.output_function::<2>();
+        let (w_c, res, gain, mode) = self.params.get_values(self.pi_tick);
+        let update = Filter::get_smoothing_update_function(mode);
+        let get_output = Filter::get_output_function(mode);
 
         let f = &mut self.filter;
 
-        match filter_mode {
-            FilterMode::LSH => f.set_params_low_shelving_smoothed(cutoff, res, gain, num_samples),
-            FilterMode::BSH => f.set_params_band_shelving_smoothed(cutoff, res, gain, num_samples),
-            FilterMode::HSH => f.set_params_high_shelving_smoothed(cutoff, res, gain, num_samples),
-            _ => f.set_params_non_shelving_smoothed(cutoff, res, num_samples),
-        }
+        let num_samples = buffer.samples();
+        update(f, w_c, res, gain, num_samples);
 
         for mut frame in buffer.iter_samples() {
+            // SAFETY: we only support a stereo configuration so these indices are valid
 
-            let sample = array::from_fn(
-                |i| *unsafe { frame.get_unchecked_mut(i) }
-            ).into();
+            let sample = Simd::from_array(unsafe {
+                [*frame.get_unchecked_mut(0), *frame.get_unchecked_mut(1)]
+            });
 
-            self.filter.update_all_smoothers();
+            f.update_all_smoothers();
+            f.process(sample);
 
-            self.filter.process(sample);
-
-            let sample = get_output(&self.filter);
+            let sample = get_output(f);
 
             unsafe {
                 *frame.get_unchecked_mut(0) = sample[0];
@@ -200,8 +161,12 @@ impl Plugin for SVFFilter {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
+        self.pi_tick = TAU / buffer_config.sample_rate;
 
-        self.filter.set_sample_rate(buffer_config.sample_rate);
+        let (w_c, res, gain, mode) = self.params.get_values(self.pi_tick);
+        let update = Filter::get_update_function(mode);
+
+        update(&mut self.filter, w_c, res, gain);
         true
     }
 
@@ -211,17 +176,13 @@ impl Plugin for SVFFilter {
 }
 
 impl Vst3Plugin for SVFFilter {
-
     const VST3_CLASS_ID: [u8; 16] = *b"svf_monkeeeeeeee";
 
-    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
-        Vst3SubCategory::Filter,
-        Vst3SubCategory::Fx,
-    ];
+    const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
+        &[Vst3SubCategory::Filter, Vst3SubCategory::Fx];
 }
 
 impl ClapPlugin for SVFFilter {
-
     const CLAP_ID: &'static str = "com.AquaEBM.linear_svf";
 
     const CLAP_DESCRIPTION: Option<&'static str> = Some("Linear SVF Filter");
@@ -230,10 +191,7 @@ impl ClapPlugin for SVFFilter {
 
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
 
-    const CLAP_FEATURES: &'static [ClapFeature] = &[
-        ClapFeature::AudioEffect,
-        ClapFeature::Filter,
-    ];
+    const CLAP_FEATURES: &'static [ClapFeature] = &[ClapFeature::AudioEffect, ClapFeature::Filter];
 }
 
 nih_export_clap!(SVFFilter);

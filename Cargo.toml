@@ -14,5 +14,5 @@ path = "src/main.rs"
 
 [dependencies]
 
-plugin_util = { git = "https://github.com/AquaEBM/plugin_util.git", features = ["non_std_simd"] }
+plugin_util = { git = "https://github.com/AquaEBM/plugin_util.git", features = ["non_std_simd", "nih_plug"] }
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }

@@ -1124,7 +1124,7 @@ checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
 [[package]]
 name = "plugin_util"
 version = "0.1.0"
-source = "git+https://github.com/AquaEBM/plugin_util.git#41029ae1b6dc364a3ecbb01da87601d188edf5dd"
+source = "git+https://github.com/AquaEBM/plugin_util.git#0a34a8b22eefed9520dd3ead59125242681500bc"
 dependencies = [
  "cfg-if",
  "core_simd",

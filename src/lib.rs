@@ -1,17 +1,23 @@
 #![feature(portable_simd)]
 
+extern crate alloc;
+
+use editor::SVFBode;
+use nih_plug_vizia::{create_vizia_editor, ViziaState, ViziaTheming};
 use plugin_util::{
     filter::svf::{FilterMode, SVF},
     simd::*,
 };
 
 use nih_plug::prelude::*;
+mod editor;
 
-use core::f32::consts::TAU;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use core::{f32::consts::TAU, sync::atomic::Ordering};
 
 const MIN_FREQ: f32 = 13.;
 const MAX_FREQ: f32 = 21000.;
+const BASE_SAMPLE_RATE: f32 = 44100.;
 
 const NUM_CHANNELS: usize = 2; // stereo
 
@@ -19,6 +25,9 @@ type Filter = SVF<NUM_CHANNELS>;
 
 #[derive(Params)]
 struct SVFParams {
+    two_pi_tick: AtomicF32,
+    #[persist = "editor_state"]
+    vizia_state: Arc<ViziaState>,
     #[id = "cutoff"]
     cutoff: FloatParam,
     #[id = "res"]
@@ -32,6 +41,8 @@ struct SVFParams {
 impl Default for SVFParams {
     fn default() -> Self {
         Self {
+            two_pi_tick: AtomicF32::new(TAU / BASE_SAMPLE_RATE),
+            vizia_state: ViziaState::new(|| (400, 140)),
             cutoff: FloatParam::new("Cutoff", 0.5, FloatRange::Linear { min: 0., max: 1. })
                 .with_value_to_string(Arc::new(|value| {
                     (MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(value)).to_string()
@@ -78,7 +89,7 @@ impl SVFParams {
 #[derive(Default)]
 pub struct SVFFilter {
     params: Arc<SVFParams>,
-    pi_tick: f32,
+    two_pi_tick: f32,
     filter: Filter,
 }
 
@@ -121,7 +132,7 @@ impl Plugin for SVFFilter {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let (w_c, res, gain, mode) = self.params.get_values(self.pi_tick);
+        let (w_c, res, gain, mode) = self.params.get_values(self.two_pi_tick);
         let update = Filter::get_smoothing_update_function(mode);
         let get_output = Filter::get_output_function(mode);
 
@@ -152,7 +163,14 @@ impl Plugin for SVFFilter {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        None
+        let params = self.params.clone();
+        create_vizia_editor(
+            self.params.vizia_state.clone(),
+            ViziaTheming::Builtin,
+            move |cx, _gui_ctx| {
+                SVFBode::new(cx, params.clone());
+            },
+        )
     }
 
     fn initialize(
@@ -161,12 +179,16 @@ impl Plugin for SVFFilter {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-        self.pi_tick = TAU / buffer_config.sample_rate;
+        self.two_pi_tick = TAU / buffer_config.sample_rate;
 
-        let (w_c, res, gain, mode) = self.params.get_values(self.pi_tick);
+        let (w_c, res, gain, mode) = self.params.get_values(self.two_pi_tick);
         let update = Filter::get_update_function(mode);
 
         update(&mut self.filter, w_c, res, gain);
+
+        self.params
+            .two_pi_tick
+            .store(self.two_pi_tick, Ordering::Relaxed);
         true
     }
 

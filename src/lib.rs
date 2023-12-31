@@ -74,11 +74,11 @@ impl Default for SVFParams {
 }
 
 impl SVFParams {
-    fn get_values(&self, pi_tick: f32) -> (f32x2, f32x2, f32x2, FilterMode) {
+    fn get_values(&self, two_pi_tick: f32) -> (f32x2, f32x2, f32x2, FilterMode) {
         let cutoff_normalized = self.cutoff.unmodulated_plain_value();
         let gain_normalized = self.gain.unmodulated_plain_value();
         (
-            Simd::splat(pi_tick * MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff_normalized)),
+            Simd::splat(two_pi_tick * MIN_FREQ * (MAX_FREQ / MIN_FREQ).powf(cutoff_normalized)),
             Simd::splat(2. * self.res.unmodulated_plain_value()),
             Simd::splat(10f32.powf(gain_normalized * (1. / 20.))),
             self.mode.unmodulated_plain_value(),
@@ -90,6 +90,7 @@ impl SVFParams {
 pub struct SVFFilter {
     params: Arc<SVFParams>,
     two_pi_tick: f32,
+    min_smoothing_time: usize,
     filter: Filter,
 }
 
@@ -138,7 +139,7 @@ impl Plugin for SVFFilter {
 
         let f = &mut self.filter;
 
-        let num_samples = buffer.samples();
+        let num_samples = buffer.samples().max(self.min_smoothing_time);
         update(f, w_c, res, gain, num_samples);
 
         for mut frame in buffer.iter_samples() {
@@ -179,7 +180,11 @@ impl Plugin for SVFFilter {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-        self.two_pi_tick = TAU / buffer_config.sample_rate;
+
+        let sr = buffer_config.sample_rate;
+        self.two_pi_tick = TAU / sr;
+
+        self.min_smoothing_time = usize::max((sr / 1000.) as usize, 16);
 
         let (w_c, res, gain, mode) = self.params.get_values(self.two_pi_tick);
         let update = Filter::get_update_function(mode);

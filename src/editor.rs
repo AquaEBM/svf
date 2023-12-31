@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use core::{sync::atomic::Ordering, cell::RefCell};
 
 use nih_plug::params::Param;
 use nih_plug_vizia::vizia::{prelude::*, vg};
@@ -11,12 +11,16 @@ use plugin_util::{
 use crate::{Arc, SVFParams, BASE_SAMPLE_RATE, MAX_FREQ, MIN_FREQ, TAU, Filter};
 
 pub struct SVFBode {
-    pub params: Arc<SVFParams>,
+    params: Arc<SVFParams>,
+    phase_color_buffer: RefCell<Vec<vg::Color>>
 }
 
 impl SVFBode {
     pub fn new(cx: &mut Context, params: Arc<SVFParams>) -> Handle<Self> {
-        SVFBode { params }.build(cx, |_| ())
+        SVFBode {
+            params,
+            phase_color_buffer: Default::default(),
+        }.build(cx, |_| ())
     }
 }
 
@@ -71,6 +75,8 @@ impl View for SVFBode {
         let gain_normalized = self.params.gain.modulated_plain_value();
         let gain = 10f32.powf(gain_normalized * (1. / 20.));
 
+        let mut phase_color_buffer = self.phase_color_buffer.borrow_mut();
+
         let mut point_idx = 0;
         while freq < max_freq {
             let w = f32::tan(freq * two_pi_tick * 0.5) / cutoff_freq;
@@ -79,6 +85,10 @@ impl View for SVFBode {
 
             let gain_db = 10. * f32::log10(impedence.norm_sqr());
             let offset = (gain_db / 35.) * bounds.height() / 2.;
+
+            phase_color_buffer.push(
+                vg::Color::hsl(impedence.arg() / TAU, 1., 0.5)
+            );
 
             if point_idx == 0 {
                 plot.move_to(x, y - offset);
@@ -93,13 +103,16 @@ impl View for SVFBode {
             freq = smoother.get_current()[0];
         }
 
-        let paint = vg::Paint::linear_gradient(
+        let actual_num_pts = phase_color_buffer.len();
+
+        let paint = vg::Paint::linear_gradient_stops(
             0.,
             0.,
             width,
             0.,
-            vg::Color::rgbf(1., 0., 0.),
-            vg::Color::rgbf(0., 1., 0.),
+            phase_color_buffer.iter().enumerate().map(
+                |(i, &c)| (i as f32 / actual_num_pts as f32, c)
+            ),
         )
         .with_miter_limit(0.)
         .with_line_width(3.)
@@ -107,5 +120,7 @@ impl View for SVFBode {
         .with_stencil_strokes(true);
 
         canvas.stroke_path(&mut plot, &paint);
+
+        phase_color_buffer.clear();
     }
 }

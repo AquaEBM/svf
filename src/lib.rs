@@ -90,8 +90,14 @@ impl SVFParams {
 pub struct SVFFilter {
     params: Arc<SVFParams>,
     two_pi_tick: f32,
-    min_smoothing_time: usize,
+    smoothing_inc: f32,
     filter: Filter,
+}
+
+impl SVFFilter {
+    fn get_param_values(&self) -> (f32x2, f32x2, f32x2, FilterMode) {
+        self.params.get_values(self.two_pi_tick)
+    }
 }
 
 impl Plugin for SVFFilter {
@@ -99,11 +105,11 @@ impl Plugin for SVFFilter {
 
     const VENDOR: &'static str = "AquaEBM";
 
-    const URL: &'static str = "monkey.com";
+    const URL: &'static str = "github.com/AquaEBM";
 
     const EMAIL: &'static str = "monke@monkey.com";
 
-    const VERSION: &'static str = "0.6.9";
+    const VERSION: &'static str = "0.0.1";
 
     const MIDI_INPUT: MidiConfig = MidiConfig::None;
 
@@ -133,31 +139,37 @@ impl Plugin for SVFFilter {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let (w_c, res, gain, mode) = self.params.get_values(self.two_pi_tick);
+        let (w_c, res, gain, mode) = self.get_param_values();
         let update = Filter::get_smoothing_update_function(mode);
         let get_output = Filter::get_output_function(mode);
 
         let f = &mut self.filter;
 
-        let num_samples = buffer.samples().max(self.min_smoothing_time);
-        update(f, w_c, res, gain, num_samples);
+        update(
+            f,
+            w_c,
+            res,
+            gain,
+            Simd::splat(self.smoothing_inc.min(1. / buffer.samples() as f32)),
+        );
 
-        for mut frame in buffer.iter_samples() {
-            // SAFETY: we only support a stereo configuration so these indices are valid
-
-            let sample = Simd::from_array(unsafe {
-                [*frame.get_unchecked_mut(0), *frame.get_unchecked_mut(1)]
-            });
-
+        for mut outupt_frame in buffer.iter_samples() {
             f.update_all_smoothers();
-            f.process(sample);
 
-            let sample = get_output(f);
+            let mut frame_iter = outupt_frame.iter_mut();
+            // SAFETY: we only support a stereo configuration (so we have exactly two samples per frame)
+            let l = unsafe { frame_iter.next().unwrap_unchecked() };
+            let r = unsafe { frame_iter.next().unwrap_unchecked() };
 
-            unsafe {
-                *frame.get_unchecked_mut(0) = sample[0];
-                *frame.get_unchecked_mut(1) = sample[1];
-            }
+            let mut frame = Simd::from_array([*l, *r]);
+            f.process(frame);
+
+            frame = get_output(f);
+
+            let [l_sample, r_sample] = frame.to_array();
+
+            *l = l_sample;
+            *r = r_sample;
         }
 
         ProcessStatus::Normal
@@ -180,13 +192,12 @@ impl Plugin for SVFFilter {
         buffer_config: &BufferConfig,
         _context: &mut impl InitContext<Self>,
     ) -> bool {
-
         let sr = buffer_config.sample_rate;
         self.two_pi_tick = TAU / sr;
 
-        self.min_smoothing_time = usize::max((sr / 1000.) as usize, 16);
+        self.smoothing_inc = 50. / sr;
 
-        let (w_c, res, gain, mode) = self.params.get_values(self.two_pi_tick);
+        let (w_c, res, gain, mode) = self.get_param_values();
         let update = Filter::get_update_function(mode);
 
         update(&mut self.filter, w_c, res, gain);
